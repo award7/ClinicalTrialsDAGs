@@ -12,8 +12,6 @@ from airflow.utils.task_group import TaskGroup
 from datetime import datetime
 # import os
 # from docker.types import Mount
-import sys
-sys.path.append('/home/schragelab/repos/ClinicalTrialETL')
 from ClinicalTrialETL.etl.extract import extract_redcap_data
 from ClinicalTrialETL.redcap_api.api import Events, Forms
 
@@ -21,7 +19,6 @@ from ClinicalTrialETL.redcap_api.api import Events, Forms
 with DAG('2019_0361_etl_dag', schedule_interval=None, start_date=datetime(2021, 8, 1), catchup=False) as dag:
     with TaskGroup(group_id='extract') as extract_tg:
         TIMESTAMP = ""
-
 
         # extract all data to store as a backup
         extract_full = PythonOperator(
