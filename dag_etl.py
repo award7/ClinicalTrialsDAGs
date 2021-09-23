@@ -13,74 +13,69 @@ from datetime import datetime
 # import os
 # from docker.types import Mount
 from ClinicalTrialETL.etl.extract import extract_redcap_data
-from ClinicalTrialETL.redcap_api.api import Events, Forms
+# from ClinicalTrialETL.redcap_api.api import Events, Forms
+from ClinicalTrialETL.etl import transform
 
 
 with DAG('2019_0361_etl_dag', schedule_interval=None, start_date=datetime(2021, 8, 1), catchup=False) as dag:
     with TaskGroup(group_id='extract') as extract_tg:
-        TIMESTAMP = ""
+        TIMESTAMP = datetime.now().strftime('%Y%m%d_%I%M%S')
+        FILE_EXT = 'csv'
 
         # extract all data to store as a backup
-        extract_full = PythonOperator(
-            task_id='extract-test',
+        extract_redcap_data_full = PythonOperator(
+            task_id='extract-redcap-data-full',
             python_callable=extract_redcap_data
         )
 
-        extract_prescreening_data = DummyOperator(
-            task_id='extract-prescreening-data'
-        )
-
-        events = [Events.screening_arm_1]
-        forms = [Forms.yogtt009_screening_visit_data_collection_form]
-
-        extract_screening_data = PythonOperator(
-            task_id='extract-screening-data',
-            python_callable=extract_redcap_data,
-            op_kwargs={'file_name': f'irb_2019_0361_{export_content}_raw_{timestamp}.{file_ext}'}
-        )
-
-        extract_cognitive_data = DummyOperator(
-            task_id='extract-cognitive-data'
-        )
-
-        extract_structural_mri_visit_data = DummyOperator(
-            task_id='extract-structural-mri-visit-data'
-        )
-
-        extract_ogtt_visit_data = DummyOperator(
-            task_id='extract-ogtt-visit-data'
-        )
-
-        extract_medication_data = DummyOperator(
-            task_id='extract-medication-data'
-        )
-
     with TaskGroup(group_id='transform') as transform_tg:
-        merge_data = DummyOperator(
-            task_id='merge-data'
-        )
-        extract_tg >> merge_data
+        # take the raw api file and parse it into the necessary components for db loading
 
-        calculate_mets = DummyOperator(
-            task_id='calculate_mets'
-        )
-        merge_data >> calculate_mets
-
-        calculate_homa_ir = DummyOperator(
-            task_id='calculate-homa-ir'
-        )
-        merge_data >> calculate_homa_ir
-
-        aggregate_rx = DummyOperator(
-            task_id='aggregate-rx'
-        )
-        merge_data >> aggregate_rx
-
-        aggregate_ae = DummyOperator(
-            task_id='aggregate-ae'
+        # set the proc staging location in an xcom
+        set_proc_staging_location = PythonOperator(
+            task_id='set-proc-staging-location',
+            python_callable=transform.set_proc_staging_location
         )
 
-        merge_data >> aggregate_ae
+        extract_tg >> set_proc_staging_location
+
+        parse_prescreening_data = PythonOperator(
+            task_id='parse-prescreening-data',
+            python_callable=transform.parse_prescreening_data,
+            op_kwargs={'file_name': f'prescreening_data_{TIMESTAMP}.{FILE_EXT}'}
+        )
+
+        set_proc_staging_location >> parse_prescreening_data
+
+        get_prescreening_survey_counts = PythonOperator(
+            task_id='get-prescreening-survey-counts',
+            python_callable=transform.get_opened_survey_count
+        )
+
+        parse_prescreening_data >> get_prescreening_survey_counts
+
+
+
+        # calculate_mets = DummyOperator(
+        #     task_id='calculate_mets'
+        # )
+        # parse_data >> calculate_mets
+        #
+        # calculate_homa_ir = DummyOperator(
+        #     task_id='calculate-homa-ir'
+        # )
+        # parse_data >> calculate_homa_ir
+        #
+        # aggregate_rx = DummyOperator(
+        #     task_id='aggregate-rx'
+        # )
+        # parse_data >> aggregate_rx
+        #
+        # aggregate_ae = DummyOperator(
+        #     task_id='aggregate-ae'
+        # )
+        #
+        # parse_data >> aggregate_ae
 
         # calculate_ogtt_glucose_auc = DummyOperator(
         #     task_id='calculate-ogtt-glucose-auc'
