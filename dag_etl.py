@@ -28,6 +28,27 @@ with DAG('2019_0361_etl_dag', schedule_interval=None, start_date=datetime(2021, 
             python_callable=extract_redcap_data
         )
 
+        extract_form_event_mapping = PythonOperator(
+            task_id='extract-form-event-mapping',
+            python_callable=extract_redcap_data,
+            op_kwargs={'export_content': 'form_event_mapping',
+                       'file_name': f'irb_2019_0361_form_event_mapping_{TIMESTAMP}.{FILE_EXT}'}
+        )
+
+        extract_field_names = PythonOperator(
+            task_id='extract-field-names',
+            python_callable=extract_redcap_data,
+            op_kwargs={'export_content': 'field_names',
+                       'file_name': f'irb_2019_0361_field_names_{TIMESTAMP}.{FILE_EXT}'}
+        )
+
+        extract_redcap_metadata = PythonOperator(
+            task_id='extract-redcap_metadata',
+            python_callable=extract_redcap_data,
+            op_kwargs={'export_content': 'metadata',
+                       'file_name': 'irb_2019_0361_metadata_{TIMESTAMP}.{FILE_EXT}'}
+        )
+
     with TaskGroup(group_id='transform') as transform_tg:
         # take the raw api file and parse it into the necessary components for db loading
 
@@ -39,13 +60,19 @@ with DAG('2019_0361_etl_dag', schedule_interval=None, start_date=datetime(2021, 
 
         extract_tg >> set_proc_staging_location
 
+        event_form_field_mapping = DummyOperator(
+            task_id='event-form-field-mapping'
+        )
+
+        extract_tg >> event_form_field_mapping
+
         parse_prescreening_data = PythonOperator(
             task_id='parse-prescreening-data',
             python_callable=transform.parse_prescreening_data,
             op_kwargs={'file_name': f'prescreening_data_{TIMESTAMP}.{FILE_EXT}'}
         )
 
-        set_proc_staging_location >> parse_prescreening_data
+        [set_proc_staging_location, event_form_field_mapping] >> parse_prescreening_data
 
         get_prescreening_survey_counts = PythonOperator(
             task_id='get-prescreening-survey-counts',
