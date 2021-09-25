@@ -43,10 +43,10 @@ with DAG('2019_0361_etl_dag', schedule_interval=None, start_date=datetime(2021, 
         )
 
         extract_redcap_metadata = PythonOperator(
-            task_id='extract-redcap_metadata',
+            task_id='extract-redcap-metadata',
             python_callable=extract_redcap_data,
             op_kwargs={'export_content': 'metadata',
-                       'file_name': 'irb_2019_0361_metadata_{TIMESTAMP}.{FILE_EXT}'}
+                       'file_name': f'irb_2019_0361_metadata_{TIMESTAMP}.{FILE_EXT}'}
         )
 
     with TaskGroup(group_id='transform') as transform_tg:
@@ -60,8 +60,9 @@ with DAG('2019_0361_etl_dag', schedule_interval=None, start_date=datetime(2021, 
 
         extract_tg >> set_proc_staging_location
 
-        event_form_field_mapping = DummyOperator(
-            task_id='event-form-field-mapping'
+        event_form_field_mapping = PythonOperator(
+            task_id='event-form-field-mapping',
+            python_callable=transform.create_event_form_field_mapping
         )
 
         extract_tg >> event_form_field_mapping
@@ -74,12 +75,12 @@ with DAG('2019_0361_etl_dag', schedule_interval=None, start_date=datetime(2021, 
 
         [set_proc_staging_location, event_form_field_mapping] >> parse_prescreening_data
 
-        get_prescreening_survey_counts = PythonOperator(
-            task_id='get-prescreening-survey-counts',
-            python_callable=transform.get_opened_survey_count
-        )
-
-        parse_prescreening_data >> get_prescreening_survey_counts
+        # get_prescreening_survey_counts = PythonOperator(
+        #     task_id='get-prescreening-survey-counts',
+        #     python_callable=transform.get_opened_survey_count
+        # )
+        #
+        # parse_prescreening_data >> get_prescreening_survey_counts
 
 
 
@@ -121,3 +122,24 @@ with DAG('2019_0361_etl_dag', schedule_interval=None, start_date=datetime(2021, 
         # 0838
         # load to msssql
 
+    with TaskGroup(group_id='cleanup') as cleanup_tg:
+        remove_old_raw_files = PythonOperator(
+            task_id='remove-old-raw-files',
+            python_callable=transform.remove_old_files,
+            op_kwargs={'key': 'raw_staging_location',
+                       'task_ids': ['extract.extract-redcap-data-full',
+                                    'extract.extract-form-event-mapping',
+                                    'extract.extract-field-names',
+                                    'extract.extract-redcap-metadata']}
+        )
+
+        load_tg >> remove_old_raw_files
+
+        remove_old_files = PythonOperator(
+            task_id='remove-old-proc-files',
+            python_callable=transform.remove_old_files,
+            op_kwargs={'key': 'proc_staging_location',
+                       'task_ids': ['transform.set-proc-staging-location']}
+        )
+
+        load_tg >> remove_old_files
