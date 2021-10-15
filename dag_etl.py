@@ -4,7 +4,7 @@ from airflow.operators.python import PythonOperator
 from airflow.operators.dummy import DummyOperator
 # # from airflow.providers.mongo.hooks.mongo import MongoHook
 # from custom.mongodb_operator import S3ToMongoOperator
-# from airflow.providers.microsoft.mssql.operators.mssql import MsSqlOperator
+from airflow.providers.microsoft.mssql.operators.mssql import MsSqlOperator
 # # from airflow.providers.microsoft.mssql.hooks.mssql import MsSqlHook
 # from custom.docker_xcom_operator import DockerXComOperator
 # from airflow.utils.trigger_rule import TriggerRule
@@ -14,7 +14,7 @@ from datetime import datetime
 # from docker.types import Mount
 from ClinicalTrialETL.etl.extract import extract_redcap_data
 from ClinicalTrialETL.redcap_api.api import Events, Forms
-from ClinicalTrialETL.etl import transform
+from ClinicalTrialETL.etl import transform, load
 
 
 with DAG('2019_0361_etl_dag', schedule_interval=None, start_date=datetime(2021, 8, 1), catchup=False) as dag:
@@ -31,7 +31,7 @@ with DAG('2019_0361_etl_dag', schedule_interval=None, start_date=datetime(2021, 
         FILE_EXT = 'csv'
 
         # only retrieve those signed off as eligible
-        EXTRACT_FILTER_LOGIC = '[yn_eligible]=1'
+        EXTRACT_FILTER_LOGIC = "[yn_eligible]=1"
 
         # extract all data to store as a backup
         extract_redcap_data_full = PythonOperator(
@@ -45,11 +45,17 @@ with DAG('2019_0361_etl_dag', schedule_interval=None, start_date=datetime(2021, 
             python_callable=extract_redcap_data,
             op_kwargs={
                 'file_name': f'demographics_raw_{TIMESTAMP}.{FILE_EXT}',
-                'fields': ['record_id'],
+                'fields': ['record_id', 'age_scr_data'],
                 'forms': [Forms.demographics_survey.name, Forms.yogtt004_demographics.name],
                 'events': [Events.screening_arm_1.name, Events.rescreening_arm_1.name],
                 'filter_logic': EXTRACT_FILTER_LOGIC
                        }
+        )
+
+        # extract visits
+        # todo: build api call to get subject, visit names and dates
+        extract_redcap_visits_data = DummyOperator(
+            task_id='extract-redcap-visits-data'
         )
 
         # extract screening data
@@ -118,6 +124,33 @@ with DAG('2019_0361_etl_dag', schedule_interval=None, start_date=datetime(2021, 
             }
         )
 
+        # extract cbc data
+        extract_redcap_cbc_data = PythonOperator(
+            task_id='extract-redcap-cbc-data',
+            python_callable=extract_redcap_data,
+            op_kwargs={
+                'file_name': f'cbc_data_raw_{TIMESTAMP}.{FILE_EXT}',
+                'fields': ['record_id'],
+                'forms': [Forms.yogtt009_screening_visit_data_collection_form.name],
+                'events': [Events.screening_arm_1.name, Events.rescreening_arm_1.name],
+                'filter_logic': EXTRACT_FILTER_LOGIC
+            }
+        )
+
+        # extract vo2 data
+        # todo: build form in redcap for vo2 data
+        extract_redcap_vo2_data = DummyOperator(
+            task_id='extract-redcap-vo2-data',
+            # python_callable=extract_redcap_data,
+            # op_kwargs={
+            #     'file_name': f'vo2_data_raw_{TIMESTAMP}.{FILE_EXT}',
+            #     'fields': ['record_id'],
+            #     'forms': [Forms.name],
+            #     'events': [Events.dexa_data_arm_1.name, Events.redexa_data_arm_1.name],
+            #     'filter_logic': EXTRACT_FILTER_LOGIC
+            # }
+        )
+
     with TaskGroup(group_id='transform') as transform_tg:
         # take the raw api file and parse it into the necessary components for db loading
 
@@ -133,37 +166,116 @@ with DAG('2019_0361_etl_dag', schedule_interval=None, start_date=datetime(2021, 
 
         [set_proc_staging_location, extract_redcap_demographics_data] >> clean_demographics_data
 
-    def test_load():
-        import pymssql
-        server = ''
-        database = ''
-        uid = ''
-        pwd = ''
+        clean_visits_data = DummyOperator(
+            task_id='clean-visits-data'
+        )
+        [set_proc_staging_location, extract_redcap_visits_data] >> clean_visits_data
 
-        conn = pymssql.connect(server, uid, pwd, database)
-        cur = conn.cursor()
-        sql = 'SELECT * FROM sys.tables'
-        cur.execute(sql)
-        for row in cur:
-            print(row)
-
-    with TaskGroup(group_id='load') as load_tg:
-        load_test = PythonOperator(
-            task_id='load-test',
-            python_callable=test_load
+        # todo: build and call cleaning method/class that will then parse the file for loading
+        clean_screening_data = DummyOperator(
+            task_id='clean-screening-data'
         )
 
-        clean_demographics_data >> load_test
+        [set_proc_staging_location, extract_redcap_screening_data] >> clean_screening_data
 
-    # with TaskGroup(group_id='load') as load_tg:
-    #     load_to_redcap_0361 = DummyOperator(
-    #         task_id='load-to-redcap-0361'
-    #     )
-    #     transform_tg >> load_to_redcap_0361
-    #
-    #     # 0838
-    #     # load to msssql
-    #
+        clean_vo2_data = DummyOperator(
+            task_id='clean-vo2-data'
+        )
+
+        [set_proc_staging_location, extract_redcap_vo2_data] >> clean_vo2_data
+
+        clean_dexa_data = DummyOperator(
+            task_id='clean-dexa-data'
+        )
+
+        [set_proc_staging_location, extract_redcap_dexa_data] >> clean_dexa_data
+
+        clean_ogtt_bloods = DummyOperator(
+            task_id='clean-ogtt-bloods'
+        )
+
+        [set_proc_staging_location, extract_redcap_ogtt_data] >> clean_ogtt_bloods
+
+        clean_ogtt_vitals = DummyOperator(
+            task_id='clean-ogtt-vitals'
+        )
+
+        [set_proc_staging_location, extract_redcap_ogtt_data] >> clean_ogtt_vitals
+
+    with TaskGroup(group_id='load') as load_tg:
+        load_demographics_data = PythonOperator(
+            task_id='load-demographics-data',
+            python_callable=load.load_subjects,
+            op_kwargs={
+                'conn_id': "schrage_lab_db",
+                'csv_path': "{{ ti.xcom_pull(task_ids='transform.clean-demographics-data') }}"
+            }
+        )
+
+        clean_demographics_data >> load_demographics_data
+
+        load_visits_data = DummyOperator(
+            task_id='load-visits-data'
+        )
+
+        [load_demographics_data, clean_visits_data] >> load_visits_data
+
+        load_cbc_data = DummyOperator(
+            task_id='load-cbc-data'
+        )
+
+        [load_visits_data, clean_screening_data] >> load_cbc_data
+
+        load_dexa_data = DummyOperator(
+            task_id='load-dexa-data'
+        )
+
+        [load_visits_data, clean_dexa_data] >> load_dexa_data
+
+        load_vo2_data = DummyOperator(
+            task_id='load-vo2-data'
+        )
+
+        [load_visits_data, clean_vo2_data] >> load_vo2_data
+
+        load_ogtt_bloods_data = DummyOperator(
+            task_id='load-ogtt-bloods-data'
+        )
+
+        [load_visits_data, clean_ogtt_bloods] >> load_ogtt_bloods_data
+
+        load_screening_bloods_data = DummyOperator(
+            task_id='load-screening-bloods-data'
+        )
+
+        [load_visits_data, clean_screening_data] >> load_screening_bloods_data
+
+        load_screening_vitals_data = DummyOperator(
+            task_id='load-screening-vitals-data'
+        )
+
+        [load_visits_data, clean_screening_data] >> load_screening_vitals_data
+
+        # todo: make this table in the db
+        load_ogtt_vitals = DummyOperator(
+            task_id='load-ogtt-vitals'
+        )
+
+        [load_visits_data, clean_ogtt_vitals] >> load_ogtt_vitals
+
+        # load_to_redcap_0361 = DummyOperator(
+        #     task_id='load-to-redcap-0361'
+        # )
+        #
+        # transform_tg >> load_to_redcap_0361
+
+    with TaskGroup(group_id='cleanup') as cleanup_tg:
+        remove_old_files = DummyOperator(
+            task_id='remove-old-files'
+        )
+        [load_demographics_data, load_visits_data, load_dexa_data, load_vo2_data, load_ogtt_bloods_data,
+         load_screening_bloods_data, load_screening_vitals_data, load_ogtt_vitals] >> remove_old_files
+
     # with TaskGroup(group_id='cleanup') as cleanup_tg:
     #     remove_old_raw_files = PythonOperator(
     #         task_id='remove-old-raw-files',
