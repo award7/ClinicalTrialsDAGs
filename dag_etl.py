@@ -7,14 +7,14 @@ from airflow.operators.dummy import DummyOperator
 from airflow.providers.microsoft.mssql.operators.mssql import MsSqlOperator
 # # from airflow.providers.microsoft.mssql.hooks.mssql import MsSqlHook
 # from custom.docker_xcom_operator import DockerXComOperator
-# from airflow.utils.trigger_rule import TriggerRule
+# from airflow.asl_utils.trigger_rule import TriggerRule
 from airflow.utils.task_group import TaskGroup
 from datetime import datetime
 # import os
 # from docker.types import Mount
 from ClinicalTrialETL.etl.extract import extract_redcap_data
 from ClinicalTrialETL.redcap_api.api import Events, Forms
-from ClinicalTrialETL.etl import transform, load
+from ClinicalTrialETL.etl import transform, load, utils
 
 
 with DAG('2019_0361_etl_dag', schedule_interval=None, start_date=datetime(2021, 8, 1), catchup=False) as dag:
@@ -22,16 +22,16 @@ with DAG('2019_0361_etl_dag', schedule_interval=None, start_date=datetime(2021, 
         # set the proc staging location in an xcom
         set_proc_staging_location = PythonOperator(
             task_id='set-proc-staging-location',
-            python_callable=transform.set_proc_staging_location
+            python_callable=utils.get_default_staging_location,
+            op_kwargs={
+                'bucket': 'proc'
+            }
         )
 
     with TaskGroup(group_id='extract') as extract_tg:
 
         TIMESTAMP = datetime.now().strftime('%Y%m%d_%I%M%S')
         FILE_EXT = 'csv'
-
-        # only retrieve those signed off as eligible
-        EXTRACT_FILTER_LOGIC = "[yn_eligible]=1"
 
         # extract all data to store as a backup
         extract_redcap_data_full = PythonOperator(
@@ -48,14 +48,8 @@ with DAG('2019_0361_etl_dag', schedule_interval=None, start_date=datetime(2021, 
                 'fields': ['record_id', 'age_scr_data'],
                 'forms': [Forms.demographics_survey.name, Forms.yogtt004_demographics.name],
                 'events': [Events.screening_arm_1.name, Events.rescreening_arm_1.name],
-                'filter_logic': EXTRACT_FILTER_LOGIC
+                'filter_logic': '[yn_eligible]=1'
                        }
-        )
-
-        # extract visits
-        # todo: build api call to get subject, visit names and dates
-        extract_redcap_visits_data = DummyOperator(
-            task_id='extract-redcap-visits-data'
         )
 
         # extract screening data
@@ -65,9 +59,9 @@ with DAG('2019_0361_etl_dag', schedule_interval=None, start_date=datetime(2021, 
             op_kwargs={
                 'file_name': f'screening_data_raw_{TIMESTAMP}.{FILE_EXT}',
                 'fields': ['record_id'],
-                'forms': [Forms.yogtt002_screening_visit_checklist.name, Forms.yogtt009_screening_visit_data_collection_form.name],
+                'forms': [Forms.yogtt009_screening_visit_data_collection_form.name],
                 'events': [Events.screening_arm_1.name, Events.rescreening_arm_1.name],
-                'filter_logic': EXTRACT_FILTER_LOGIC
+                'filter_logic': '[yn_eligible]=1'
             }
         )
 
@@ -80,7 +74,7 @@ with DAG('2019_0361_etl_dag', schedule_interval=None, start_date=datetime(2021, 
                 'fields': ['record_id'],
                 'forms': [Forms.yogtt012_mri_structural_visit_checklist.name],
                 'events': [Events.mri_structural_vis_arm_1.name, Events.remri_structural_v_arm_1.name],
-                'filter_logic': EXTRACT_FILTER_LOGIC
+                'filter_logic': '[yogtt012_mri_structural_visit_checklist_complete]=2'
             }
         )
 
@@ -91,9 +85,9 @@ with DAG('2019_0361_etl_dag', schedule_interval=None, start_date=datetime(2021, 
             op_kwargs={
                 'file_name': f'ogtt_data_raw_{TIMESTAMP}.{FILE_EXT}',
                 'fields': ['record_id'],
-                'forms': [Forms.yogtt013_ogtt_mri_study_visit_protocol_checklist.name],
+                'forms': [Forms.yogtt013_ogtt_mri_study_visit_protocol_checklist.name, Forms.insulin_data.name],
                 'events': [Events.ogttmri_visit_arm_1.name, Events.reogttmri_visit_arm_1.name],
-                'filter_logic': EXTRACT_FILTER_LOGIC
+                'filter_logic': '[completed_ogtt]=2'
             }
         )
 
@@ -107,7 +101,7 @@ with DAG('2019_0361_etl_dag', schedule_interval=None, start_date=datetime(2021, 
                 'forms': [Forms.yogtt011_cognitive_study_visit_protocol_checklist.name,
                           Forms.cognitive_scores.name],
                 'events': [Events.cognitive_testing_arm_1.name, Events.recognitive_testin_arm_1.name],
-                'filter_logic': EXTRACT_FILTER_LOGIC
+                'filter_logic': '[yogtt011_cognitive_study_visit_protocol_checklist_complete]=2'
             }
         )
 
@@ -120,20 +114,7 @@ with DAG('2019_0361_etl_dag', schedule_interval=None, start_date=datetime(2021, 
                 'fields': ['record_id'],
                 'forms': [Forms.dexa_data.name],
                 'events': [Events.dexa_data_arm_1.name, Events.redexa_data_arm_1.name],
-                'filter_logic': EXTRACT_FILTER_LOGIC
-            }
-        )
-
-        # extract cbc data
-        extract_redcap_cbc_data = PythonOperator(
-            task_id='extract-redcap-cbc-data',
-            python_callable=extract_redcap_data,
-            op_kwargs={
-                'file_name': f'cbc_data_raw_{TIMESTAMP}.{FILE_EXT}',
-                'fields': ['record_id'],
-                'forms': [Forms.yogtt009_screening_visit_data_collection_form.name],
-                'events': [Events.screening_arm_1.name, Events.rescreening_arm_1.name],
-                'filter_logic': EXTRACT_FILTER_LOGIC
+                'filter_logic': '[dexa_data_complete]=2'
             }
         )
 
@@ -158,18 +139,20 @@ with DAG('2019_0361_etl_dag', schedule_interval=None, start_date=datetime(2021, 
         clean_demographics_data = PythonOperator(
             task_id='clean-demographics-data',
             python_callable=obj,
-            op_kwargs={
-                'raw_task_id': 'extract.extract-redcap-demographics-data',
-                'proc_file_name': f'demographics_{TIMESTAMP}.{FILE_EXT}'
-            }
+            op_args=[
+                "{{ ti.xcom_pull(task_ids='extract.extract-redcap-demographics-data') }}",
+                f'demographics_{TIMESTAMP}.{FILE_EXT}',
+                "{{ ti.xcom_pull(task_ids='initialization.set-proc-staging-location') }}"
+            ],
         )
 
         [set_proc_staging_location, extract_redcap_demographics_data] >> clean_demographics_data
 
+        # this task aggregates all the subjects, visits, and associated visit dates into one output
         clean_visits_data = DummyOperator(
             task_id='clean-visits-data'
         )
-        [set_proc_staging_location, extract_redcap_visits_data] >> clean_visits_data
+        set_proc_staging_location >> clean_visits_data
 
         # todo: build and call cleaning method/class that will then parse the file for loading
         clean_screening_data = DummyOperator(
