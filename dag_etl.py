@@ -1,12 +1,9 @@
 from airflow import DAG
-from operators.Api2DbOperator import Api2DbOperator
+from operators.api2db import Api2DbOperator
+from operators.transform import TransformOperator
 from airflow.operators.python import PythonOperator
 # from airflow.operators.bash import BashOperator
 from airflow.operators.dummy import DummyOperator
-# # from airflow.providers.mongo.hooks.mongo import MongoHook
-# from custom.mongodb_operator import S3ToMongoOperator
-from airflow.providers.microsoft.mssql.operators.mssql import MsSqlOperator
-# # from airflow.providers.microsoft.mssql.hooks.mssql import MsSqlHook
 # from custom.docker_xcom_operator import DockerXComOperator
 # from airflow.asl_utils.trigger_rule import TriggerRule
 from airflow.utils.task_group import TaskGroup
@@ -19,136 +16,298 @@ from ClinicalTrialETL.redcap_api import api
 
 
 with DAG('2019_0361_etl_dag', schedule_interval=None, start_date=datetime(2021, 8, 1), catchup=False) as dag:
+    CONN_ID = 'schrage_lab_db'
 
-    tmp = Api2DbOperator(
-        task_id='tmp',
-        conn_id='schrage_lab_db',
-        table='Subjects_STG',
-        python_callable=api.export_records,
-        op_kwargs={
-            'fields': ['record_id', 'age_scr_data'],
-            'events': [api.Events.screening_arm_1.name],
-            'filter_logic': '[yn_eligible]=1'
-        }
-    )
+    with TaskGroup(group_id='extract') as extract_tg:
+        extract_prescreening_survey = Api2DbOperator(
+            task_id='extract-prescreening-survey',
+            conn_id=CONN_ID,
+            table='irb_2019_0361_prescreening_survey_STG',
+            python_callable=api.export_records,
+            op_kwargs={
+                'fields': ['record_id'],
+                'forms': [
+                    api.Forms.insulin_resistance_in_adolescents_survey.name],
+                'events': [
+                    api.Events.prescreening_arm_1.name
+                ]
+            }
+        )
 
-    # with TaskGroup(group_id='initialization') as init_tg:
-    #     # set the proc staging location in an xcom
-    #     set_proc_staging_location = PythonOperator(
-    #         task_id='set-proc-staging-location',
-    #         python_callable=utils.get_default_staging_location,
-    #         op_kwargs={
-    #             'bucket': 'proc'
-    #         }
-    #     )
-    #
-    # with TaskGroup(group_id='extract') as extract_tg:
-    #
-    #     TIMESTAMP = datetime.now().strftime('%Y%m%d_%I%M%S')
-    #     FILE_EXT = 'csv'
-    #
-    #     # extract all data to store as a backup
-    #     extract_redcap_data_full = PythonOperator(
-    #         task_id='extract-redcap-data-full',
-    #         python_callable=extract_redcap_data
-    #     )
-    #
-    #     # extract demographics
-    #     extract_redcap_demographics_data = PythonOperator(
-    #         task_id='extract-redcap-demographics-data',
-    #         python_callable=extract_redcap_data,
-    #         op_kwargs={
-    #             'file_name': f'demographics_raw_{TIMESTAMP}.{FILE_EXT}',
-    #             'fields': ['record_id', 'age_scr_data'],
-    #             'forms': [Forms.demographics_survey.name, Forms.yogtt004_demographics.name],
-    #             'events': [Events.screening_arm_1.name, Events.rescreening_arm_1.name],
-    #             'filter_logic': '[yn_eligible]=1'
-    #                    }
-    #     )
-    #
-    #     # extract screening data
-    #     extract_redcap_screening_data = PythonOperator(
-    #         task_id='extract-redcap-screening-data',
-    #         python_callable=extract_redcap_data,
-    #         op_kwargs={
-    #             'file_name': f'screening_data_raw_{TIMESTAMP}.{FILE_EXT}',
-    #             'fields': ['record_id'],
-    #             'forms': [Forms.yogtt009_screening_visit_data_collection_form.name],
-    #             'events': [Events.screening_arm_1.name, Events.rescreening_arm_1.name],
-    #             'filter_logic': '[yn_eligible]=1'
-    #         }
-    #     )
-    #
-    #     # extract mri structural data
-    #     extract_redcap_mri_structural_data = PythonOperator(
-    #         task_id='extract-redcap-mri-structural-data',
-    #         python_callable=extract_redcap_data,
-    #         op_kwargs={
-    #             'file_name': f'mri_structural_data_raw_{TIMESTAMP}.{FILE_EXT}',
-    #             'fields': ['record_id'],
-    #             'forms': [Forms.yogtt012_mri_structural_visit_checklist.name],
-    #             'events': [Events.mri_structural_vis_arm_1.name, Events.remri_structural_v_arm_1.name],
-    #             'filter_logic': '[yogtt012_mri_structural_visit_checklist_complete]=2'
-    #         }
-    #     )
-    #
-    #     # extract ogtt data
-    #     extract_redcap_ogtt_data = PythonOperator(
-    #         task_id='extract-redcap-ogtt-data',
-    #         python_callable=extract_redcap_data,
-    #         op_kwargs={
-    #             'file_name': f'ogtt_data_raw_{TIMESTAMP}.{FILE_EXT}',
-    #             'fields': ['record_id'],
-    #             'forms': [Forms.yogtt013_ogtt_mri_study_visit_protocol_checklist.name, Forms.insulin_data.name],
-    #             'events': [Events.ogttmri_visit_arm_1.name, Events.reogttmri_visit_arm_1.name],
-    #             'filter_logic': '[completed_ogtt]=2'
-    #         }
-    #     )
-    #
-    #     # extract cognitive data
-    #     extract_redcap_cognitive_data = PythonOperator(
-    #         task_id='extract-redcap-cognitive-data',
-    #         python_callable=extract_redcap_data,
-    #         op_kwargs={
-    #             'file_name': f'cognitive_data_raw_{TIMESTAMP}.{FILE_EXT}',
-    #             'fields': ['record_id'],
-    #             'forms': [Forms.yogtt011_cognitive_study_visit_protocol_checklist.name,
-    #                       Forms.cognitive_scores.name],
-    #             'events': [Events.cognitive_testing_arm_1.name, Events.recognitive_testin_arm_1.name],
-    #             'filter_logic': '[yogtt011_cognitive_study_visit_protocol_checklist_complete]=2'
-    #         }
-    #     )
-    #
-    #     # extract dexa data
-    #     extract_redcap_dexa_data = PythonOperator(
-    #         task_id='extract-redcap-dexa-data',
-    #         python_callable=extract_redcap_data,
-    #         op_kwargs={
-    #             'file_name': f'dexa_data_raw_{TIMESTAMP}.{FILE_EXT}',
-    #             'fields': ['record_id'],
-    #             'forms': [Forms.dexa_data.name],
-    #             'events': [Events.dexa_data_arm_1.name, Events.redexa_data_arm_1.name],
-    #             'filter_logic': '[dexa_data_complete]=2'
-    #         }
-    #     )
-    #
-    #     # extract vo2 data
-    #     # todo: build form in redcap for vo2 data
-    #     extract_redcap_vo2_data = DummyOperator(
-    #         task_id='extract-redcap-vo2-data',
-    #         # python_callable=extract_redcap_data,
-    #         # op_kwargs={
-    #         #     'file_name': f'vo2_data_raw_{TIMESTAMP}.{FILE_EXT}',
-    #         #     'fields': ['record_id'],
-    #         #     'forms': [Forms.name],
-    #         #     'events': [Events.dexa_data_arm_1.name, Events.redexa_data_arm_1.name],
-    #         #     'filter_logic': EXTRACT_FILTER_LOGIC
-    #         # }
-    #     )
-    #
-    # with TaskGroup(group_id='transform') as transform_tg:
-    #     # take the raw api file and parse it into the necessary components for db loading
-    #
+        # this extracts data from select screening forms that were originally completed in-person but were later
+        # replaced by online survey
+        extract_yogtt004_demographics = Api2DbOperator(
+            task_id='extract-yogtt004_demographics',
+            conn_id=CONN_ID,
+            table='irb_2019_0361_yogtt004_demographics_STG',
+            python_callable=api.export_records,
+            op_kwargs={
+                'fields': ['record_id'],
+                'forms': [
+                    api.Forms.yogtt004_demographics.name,
+                ],
+                'events': [
+                    api.Events.screening_arm_1.name,
+                    api.Events.rescreening_arm_1.name
+                ]
+            }
+        )
+
+        extract_yogtt005_medical_history = Api2DbOperator(
+            task_id='extract-yogtt005-medical-history',
+            conn_id=CONN_ID,
+            table='irb_2019_0361_yogtt005_medical_history_STG',
+            python_callable=api.export_records,
+            op_kwargs={
+                'fields': ['record_id'],
+                'forms': [
+                    api.Forms.yogtt005_medical_history.name,
+                ],
+                'events': [
+                    api.Events.screening_arm_1.name,
+                    api.Events.rescreening_arm_1.name
+                ]
+            }
+        )
+
+        extract_yogtt006_mri_safety_questionnaire = Api2DbOperator(
+            task_id='extract-yogtt006-mri-safety-questionnaire',
+            conn_id=CONN_ID,
+            table='irb_2019_0361_yogtt006_mri_safety_questionnaire_STG',
+            python_callable=api.export_records,
+            op_kwargs={
+                'fields': ['record_id'],
+                'forms': [
+                    api.Forms.yogtt006_mri_safety_questionnaire.name,
+                ],
+                'events': [
+                    api.Events.screening_arm_1.name,
+                    api.Events.rescreening_arm_1.name
+                ]
+            }
+        )
+
+        extract_yogtt007_3_day_physical_activity_recall = Api2DbOperator(
+            task_id='extract-yogtt007-3-day-physical-activity-recall',
+            conn_id=CONN_ID,
+            table='irb_2019_0361_yogtt007_3_day_physical_activity_recall_STG',
+            python_callable=api.export_records,
+            op_kwargs={
+                'fields': ['record_id'],
+                'forms': [
+                    api.Forms.yogtt007_3_day_physical_activity_recall.name,
+                ],
+                'events': [
+                    api.Events.screening_arm_1.name,
+                    api.Events.rescreening_arm_1.name
+                ]
+            }
+        )
+
+        extract_yogtt008_tanner_questionnaire = Api2DbOperator(
+            task_id='extract-yogtt008_tanner_questionnaire',
+            conn_id=CONN_ID,
+            table='irb_2019_0361_yogtt008_tanner_questionnaire_STG',
+            python_callable=api.export_records,
+            op_kwargs={
+                'fields': ['record_id'],
+                'forms': [
+                    api.Forms.yogtt008_tanner_questionnaire.name,
+                ],
+                'events': [
+                    api.Events.screening_arm_1.name,
+                    api.Events.rescreening_arm_1.name
+                ]
+            }
+        )
+
+        # this extracts all data from the online screening process that changed 2020
+        extract_demographics_survey = Api2DbOperator(
+            task_id='extract-demographics-survey',
+            conn_id=CONN_ID,
+            table='irb_2019_0361_demographics_survey_STG',
+            python_callable=api.export_records,
+            op_kwargs={
+                'fields': ['record_id'],
+                'forms': [
+                    api.Forms.demographics_survey.name
+                  ],
+                'events': [
+                    api.Events.screening_arm_1.name,
+                    api.Events.rescreening_arm_1.name
+                ]
+            }
+        )
+
+        extract_medical_history_survey = Api2DbOperator(
+            task_id='extract-medical-history-survey',
+            conn_id=CONN_ID,
+            table='irb_2019_0361_medical_history_survey_STG',
+            python_callable=api.export_records,
+            op_kwargs={
+                'fields': ['record_id'],
+                'forms': [
+                    api.Forms.medical_history_survey.name
+                ],
+                'events': [
+                    api.Events.screening_arm_1.name,
+                    api.Events.rescreening_arm_1.name
+                ]
+            }
+        )
+
+        extract_mri_survey = Api2DbOperator(
+            task_id='extract-mri-survey',
+            conn_id=CONN_ID,
+            table='irb_2019_0361_mri_survey_STG',
+            python_callable=api.export_records,
+            op_kwargs={
+                'fields': ['record_id'],
+                'forms': [
+                    api.Forms.mri_survey.name,
+                ],
+                'events': [
+                    api.Events.screening_arm_1.name,
+                    api.Events.rescreening_arm_1.name
+                ]
+            }
+        )
+
+        extract_par_survey = Api2DbOperator(
+            task_id='extract-par-survey',
+            conn_id=CONN_ID,
+            table='irb_2019_0361_par_survey_STG',
+            python_callable=api.export_records,
+            op_kwargs={
+                'fields': ['record_id'],
+                'forms': [
+                    api.Forms.par_survey.name
+                ],
+                'events': [
+                    api.Events.screening_arm_1.name,
+                    api.Events.rescreening_arm_1.name
+                ]
+            }
+        )
+
+        extract_tanner_survey = Api2DbOperator(
+            task_id='extract-tanner-survey',
+            conn_id=CONN_ID,
+            table='irb_2019_0361_tanner_survey_STG',
+            python_callable=api.export_records,
+            op_kwargs={
+                'fields': ['record_id'],
+                'forms': [
+                    api.Forms.tanner_survey.name
+                ],
+                'events': [
+                    api.Events.screening_arm_1.name,
+                    api.Events.rescreening_arm_1.name
+                ]
+            }
+        )
+
+        # this extracts the forms/data related to conducting the in-person screening
+        extract_screening_data = Api2DbOperator(
+            task_id='extract-screening-data',
+            conn_id=CONN_ID,
+            table='irb_2019_0361_screening_data_STG',
+            python_callable=api.export_records,
+            op_kwargs={
+                'fields': ['record_id'],
+                'forms': [
+                    api.Forms.yogtt002_screening_visit_checklist.name,
+                    api.Forms.yogtt009_screening_visit_data_collection_form.name,
+                    api.Forms.yogtt010_eligibility_criteria_form.name
+                ],
+                'events': [
+                    api.Events.screening_arm_1.name,
+                    api.Events.rescreening_arm_1.name
+                ]
+            }
+        )
+
+        extract_cognitive_data = Api2DbOperator(
+            task_id='extract-cognitive-data',
+            conn_id=CONN_ID,
+            table='irb_2019_0361_cognitive_data_STG',
+            python_callable=api.export_records,
+            op_kwargs={
+                'fields': ['record_id'],
+                'forms': [
+                    api.Forms.yogtt011_cognitive_study_visit_protocol_checklist.name,
+                    api.Forms.cognitive_scores.name
+                ],
+                'events': [
+                    api.Events.cognitive_testing_arm_1.name,
+                    api.Events.recognitive_testin_arm_1.name
+                ]
+            }
+        )
+
+        extract_mri_structural_data = Api2DbOperator(
+            task_id='extract-mri-structural-data',
+            conn_id=CONN_ID,
+            table='irb_2019_0361_mri_structural_data_STG',
+            python_callable=api.export_records,
+            op_kwargs={
+                'fields': ['record_id'],
+                'forms': [
+                    api.Forms.yogtt012_mri_structural_visit_checklist.name
+                ],
+                'events': [
+                    api.Events.mri_structural_vis_arm_1.name,
+                    api.Events.remri_structural_v_arm_1.name
+                ]
+            }
+        )
+
+        extract_ogtt_data = Api2DbOperator(
+            task_id='extract-ogtt-data',
+            conn_id=CONN_ID,
+            table='irb_2019_0361_ogtt_data_STG',
+            python_callable=api.export_records,
+            op_kwargs={
+                'fields': ['record_id'],
+                'forms': [
+                    api.Forms.yogtt013_ogtt_mri_study_visit_protocol_checklist.name,
+                    api.Forms.insulin_data.name
+                ],
+                'events': [
+                    api.Events.ogttmri_visit_arm_1.name,
+                    api.Events.reogttmri_visit_arm_1.name
+                ]
+            }
+        )
+
+        extract_dexa_data = Api2DbOperator(
+            task_id='extract-dexa-data',
+            conn_id=CONN_ID,
+            table='irb_2019_0361_dexa_data_STG',
+            python_callable=api.export_records,
+            op_kwargs={
+                'fields': ['record_id'],
+                'forms': [
+                    api.Forms.dexa_data.name
+                ],
+                'events': [
+                    api.Events.dexa_data_arm_1.name,
+                    api.Events.redexa_data_arm_1.name
+                ]
+            }
+        )
+
+        # todo: extract compliance data
+
+    with TaskGroup(group_id='transform') as transform_tg:
+        # take the raw data from staging table(s), clean it, and stage it for db loading
+
+        transform_subjects = TransformOperator(
+            conn_id=CONN_ID,
+            table='irb_2019_0361_prescreening_survey_STG',
+            sql=f"""SELECT ("""
+        )
+
     #     obj = transform.CleanDemographicsData()
     #     clean_demographics_data = PythonOperator(
     #         task_id='clean-demographics-data',
